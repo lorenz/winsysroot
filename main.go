@@ -3,17 +3,25 @@ package main
 import (
 	"archive/tar"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
 
-const channelManifestURL = "https://aka.ms/vs/17/release/channel"
+var (
+	flagVSRelease     = flag.String("vs-release", "17", "Major release of Visual Studio to generate sysroot from (like 14, 17, ..)")
+	flagWinSDKVersion = flag.String("win-sdk-version", "10.0.20348", "Version of the Windows SDK to use, without the patch version (e.g. 10.0.20348)")
+	flagArchitectures = flag.String("architectures", "x64", "Comma-separated list of architectures to include in the sysroot. Supported are x86, x64, arm, arm64 and arm64ec.")
+	flagSlim          = flag.Bool("slim", true, "Strip most excess files, ship only headers, libraries and object files. Also strips separate onecore, store and uwp libraries.")
+)
 
 func handleHTTPError(res *http.Response, err error) (*http.Response, error) {
 	if err != nil {
@@ -30,7 +38,11 @@ func handleHTTPError(res *http.Response, err error) (*http.Response, error) {
 }
 
 func main() {
-	res, err := handleHTTPError(http.Get(channelManifestURL))
+	flag.Parse()
+
+	architectures := strings.Split(*flagArchitectures, ",")
+
+	res, err := handleHTTPError(http.Get("https://aka.ms/vs/" + *flagVSRelease + "/release/channel"))
 	if err != nil {
 		log.Fatalf("failed to get channel manifest: %v", err)
 	}
@@ -72,6 +84,34 @@ func main() {
 	out := tar.NewWriter(outComp)
 	defer out.Close()
 
-	buildWinSDK(installerManifest, out)
-	buildVCTools(installerManifest, out)
+	var vfs VFS
+	vfs.Version = 1
+	vfs.RedirectingWith = RedirectingWithRedirectOnly
+
+	winsysRoot := Inode{
+		Type: "directory",
+		Name: "test",
+	}
+	vfs.Roots = append(vfs.Roots, &winsysRoot)
+
+	buildWinSDK(*flagWinSDKVersion, architectures, *flagSlim, installerManifest, out, &winsysRoot)
+	buildVCTools(installerManifest, architectures, *flagSlim, out, &winsysRoot)
+	vfsRaw, err := json.MarshalIndent(&vfs, "", "\t")
+	if err != nil {
+		log.Fatalf("Failed to encode VFS overlay metadata: %v", err)
+	}
+	if err := out.WriteHeader(&tar.Header{
+		Name:    "vfsoverlay.yaml",
+		ModTime: time.Now(),
+		Mode:    0644,
+		Size:    int64(len(vfsRaw)),
+	}); err != nil {
+		log.Fatalf("Failed to write header for VFS overlay: %v", err)
+	}
+	if _, err := out.Write(vfsRaw); err != nil {
+		log.Fatalf("Failed to write VFS overlay: %v", err)
+	}
+	if err := out.Close(); err != nil {
+		log.Fatalf("failed to close tar writer: %v", err)
+	}
 }

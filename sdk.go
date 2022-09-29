@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
 
@@ -16,13 +17,21 @@ import (
 var includeRegexp = regexp.MustCompile(`^Windows Kits/[^/]+/Include/[0-9\.]+/.*\.h(pp)?$`)
 var libRegexp = regexp.MustCompile(`^Windows Kits/[^/]+/Lib/[0-9\.]+/.*\.[Ll][Ii][Bb]`)
 
-func buildWinSDK(manifest InstallerManifest, out *tar.Writer) {
+func buildWinSDK(version string, architectures []string, slim bool, manifest InstallerManifest, out *tar.Writer, rootVFSInode *Inode) {
+	hasArch := make(map[string]bool)
+	for _, arch := range architectures {
+		hasArch[arch] = true
+	}
+	packageRegexp := regexp.MustCompile(`^Win.*SDK_` + regexp.QuoteMeta(version) + "$")
 	var sdkPkg Package
 	for _, pkg := range manifest.Packages {
-		if pkg.ID == "Win10SDK_10.0.20348" {
+		if packageRegexp.MatchString(pkg.ID) {
 			sdkPkg = pkg
 			break
 		}
+	}
+	if sdkPkg.ID == "" {
+		log.Fatalf("Failed to find Windows SDK with specified version")
 	}
 	cabs := make(map[string]*msi.MSI)
 	for _, payload := range sdkPkg.Payloads {
@@ -83,6 +92,34 @@ func buildWinSDK(manifest InstallerManifest, out *tar.Writer) {
 					log.Printf("Unknown file %q in CAB, ignoring", hdr.Name)
 					continue
 				}
+				parts := strings.Split(outPath, "/")
+				typeDir := strings.ToLower(parts[2])
+				if typeDir == "include" {
+					if slim {
+						ext := strings.ToLower(path.Ext(outPath))
+						if ext != "" && ext != ".h" && ext != ".hpp" && ext != ".c" && ext != ".cpp" {
+							continue
+						}
+					}
+				} else if typeDir == "lib" {
+					archDir := strings.ToLower(parts[5])
+					if !hasArch[archDir] {
+						continue
+					}
+					if slim {
+						ext := strings.ToLower(path.Ext(outPath))
+						if ext != ".lib" && ext != ".obj" {
+							continue
+						}
+					}
+				} else {
+					continue
+				}
+				rootVFSInode.Place(path.Dir(outPath), true, &Inode{
+					Type:             "file",
+					Name:             path.Base(outPath),
+					ExternalContents: outPath,
+				})
 				out.WriteHeader(&tar.Header{
 					Name:    outPath,
 					ModTime: hdr.CreateTime,
@@ -96,5 +133,4 @@ func buildWinSDK(manifest InstallerManifest, out *tar.Writer) {
 			}
 		}
 	}
-
 }
