@@ -85,12 +85,16 @@ func main() {
 	defer out.Close()
 
 	var vfs VFS
-	vfs.Version = 1
-	vfs.RedirectingWith = RedirectingWithRedirectOnly
+	vfs.Version = 0
+	vfs.RedirectingWith = RedirectingWithFallthrough
+	True := true
+	False := false
+	vfs.CaseSensitive = &False
+	vfs.OverlayRelative = &True
 
 	winsysRoot := Inode{
 		Type: "directory",
-		Name: "test",
+		Name: "/winsysroot", // TODO: This currently needs hardcoding which sucks
 	}
 	vfs.Roots = append(vfs.Roots, &winsysRoot)
 

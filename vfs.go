@@ -17,8 +17,8 @@ const (
 type VFS struct {
 	Version          int             `json:"version"`
 	CaseSensitive    *bool           `json:"case-sensitive,omitempty"`
-	UseExternalNames *bool           `json:"use-external-names"`
-	OverlayRelative  *bool           `json:"overlay-relative"`
+	UseExternalNames *bool           `json:"use-external-names,omitempty"`
+	OverlayRelative  *bool           `json:"overlay-relative,omitempty"`
 	RedirectingWith  RedirectingWith `json:"redirecting-with,omitempty"`
 	Roots            []*Inode        `json:"roots"`
 }
