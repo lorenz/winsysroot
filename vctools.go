@@ -1,13 +1,11 @@
 package main
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
 	"io"
 	"log"
 	"net/http"
-	"path"
 	"strings"
 )
 
@@ -19,7 +17,7 @@ var archTools = map[string]string{
 	"x86":     "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
 }
 
-func buildVCTools(manifest InstallerManifest, architectures []string, slim bool, out *tar.Writer, rootVFSInode *Inode) {
+func buildVCTools(manifest InstallerManifest, architectures []string, slim bool, out TargetI) {
 	pkgs := make(map[string]Package)
 	var chase func(ids map[string]interface{})
 	chase = func(ids map[string]interface{}) {
@@ -76,25 +74,15 @@ func buildVCTools(manifest InstallerManifest, architectures []string, slim bool,
 				continue
 			}
 			targetPath := strings.TrimPrefix(file.Name, "Contents/")
-			rootVFSInode.Place(path.Dir(targetPath), true, &Inode{
-				Type:             "file",
-				Name:             path.Base(targetPath),
-				ExternalContents: targetPath,
-			})
-			err := out.WriteHeader(&tar.Header{
-				Name: targetPath,
-				Mode: 0644,
-				Size: file.FileInfo().Size(),
-			})
-			if err != nil {
-				panic(err)
+			if err := out.Create(targetPath, file.FileInfo().Size(), file.FileInfo().ModTime()); err != nil {
+				log.Fatalf("Failed to create output file: %v", err)
 			}
 			f, err := file.Open()
 			if err != nil {
-				panic(err)
+				log.Fatalf("Package %q: failed to open file %q: %v", pkg.ID, file.Name, err)
 			}
 			if _, err := io.Copy(out, f); err != nil {
-				panic(err)
+				log.Fatalf("Package %q: failed to copy file %q to target: %v", pkg.ID, file.Name, err)
 			}
 			f.Close()
 		}

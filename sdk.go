@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
 	"io"
 	"log"
@@ -17,7 +16,7 @@ import (
 var includeRegexp = regexp.MustCompile(`^Windows Kits/[^/]+/Include/[0-9\.]+/.*\.h(pp)?$`)
 var libRegexp = regexp.MustCompile(`^Windows Kits/[^/]+/Lib/[0-9\.]+/.*\.[Ll][Ii][Bb]`)
 
-func buildWinSDK(version string, architectures []string, slim bool, manifest InstallerManifest, out *tar.Writer, rootVFSInode *Inode) {
+func buildWinSDK(version string, architectures []string, slim bool, manifest InstallerManifest, out TargetI) {
 	hasArch := make(map[string]bool)
 	for _, arch := range architectures {
 		hasArch[arch] = true
@@ -115,18 +114,9 @@ func buildWinSDK(version string, architectures []string, slim bool, manifest Ins
 				} else {
 					continue
 				}
-				rootVFSInode.Place(path.Dir(outPath), true, &Inode{
-					Type:             "file",
-					Name:             path.Base(outPath),
-					ExternalContents: outPath,
-				})
-				out.WriteHeader(&tar.Header{
-					Name:    outPath,
-					ModTime: hdr.CreateTime,
-					Size:    int64(hdr.Size),
-					Mode:    0644,
-				})
-
+				if err := out.Create(outPath, int64(hdr.Size), hdr.CreateTime); err != nil {
+					log.Fatalf("Failed to create output file: %v", err)
+				}
 				if _, err := io.Copy(out, cabF); err != nil {
 					log.Fatalf("Failed to extract from cab: %v", err)
 				}

@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,6 +24,8 @@ var (
 	flagWinSDKVersion = flag.String("win-sdk-version", "10.0.20348", "Version of the Windows SDK to use, without the patch version (e.g. 10.0.20348)")
 	flagArchitectures = flag.String("architectures", "x64", "Comma-separated list of architectures to include in the sysroot. Supported are x86, x64, arm, arm64 and arm64ec.")
 	flagSlim          = flag.Bool("slim", true, "Strip most excess files, ship only headers, libraries and object files. Also strips separate onecore, store and uwp libraries.")
+	flagOutDir        = flag.String("out-dir", "", "Output sysroot under this directory. Exclusive with --out-tar.")
+	flagOutTar        = flag.String("out-tar", "", "Output sysroot to a zstd-compressed tarball at the path given to this argument. Exclusive with --out-dir.")
 )
 
 func handleHTTPError(res *http.Response, err error) (*http.Response, error) {
@@ -35,6 +40,11 @@ func handleHTTPError(res *http.Response, err error) (*http.Response, error) {
 		return nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, string(errorMsg))
 	}
 	return res, nil
+}
+
+type TargetI interface {
+	Create(path string, size int64, modTime time.Time) error
+	io.WriteCloser
 }
 
 func main() {
@@ -71,19 +81,35 @@ func main() {
 	}
 	res.Body.Close()
 
-	outFile, err := os.Create("winsysroot.tar.zst")
-	if err != nil {
-		log.Fatalf("failed to create output file: %v", err)
-	}
-	defer outFile.Close()
-	outComp, err := zstd.NewWriter(outFile)
-	if err != nil {
-		log.Fatalf("Failed to initialize zstd compressor: %v", err)
-	}
-	defer outComp.Close()
-	out := tar.NewWriter(outComp)
-	defer out.Close()
+	var out TargetI
 
+	if flagOutDir != nil && *flagOutDir != "" {
+		out = newVFSTargetLayer(&directoryTarget{rootDir: *flagOutDir}, *flagOutDir)
+	} else if flagOutTar != nil && *flagOutTar != "" {
+		outInner, err := newArchiveTarget(*flagOutTar)
+		if err != nil {
+			log.Fatalf("Failed to create output tar archive: %v", err)
+		}
+		out = newVFSTargetLayer(outInner, "/winsysroot")
+	} else {
+		log.Fatalln("Please pass either --out-dir or --out-tar to this command.")
+	}
+
+	buildWinSDK(*flagWinSDKVersion, architectures, *flagSlim, installerManifest, out)
+	buildVCTools(installerManifest, architectures, *flagSlim, out)
+
+	if err := out.Close(); err != nil {
+		log.Fatalf("failed to finish wrinting output: %v", err)
+	}
+}
+
+type vfsTargetLayer struct {
+	t TargetI
+	i *Inode
+	v VFS
+}
+
+func newVFSTargetLayer(t TargetI, sysrootPath string) *vfsTargetLayer {
 	var vfs VFS
 	vfs.Version = 0
 	vfs.RedirectingWith = RedirectingWithFallthrough
@@ -94,28 +120,125 @@ func main() {
 
 	winsysRoot := Inode{
 		Type: "directory",
-		Name: "/winsysroot", // TODO: This currently needs hardcoding which sucks
+		Name: sysrootPath,
 	}
 	vfs.Roots = append(vfs.Roots, &winsysRoot)
+	return &vfsTargetLayer{
+		t: t,
+		i: &winsysRoot,
+		v: vfs,
+	}
+}
 
-	buildWinSDK(*flagWinSDKVersion, architectures, *flagSlim, installerManifest, out, &winsysRoot)
-	buildVCTools(installerManifest, architectures, *flagSlim, out, &winsysRoot)
-	vfsRaw, err := json.MarshalIndent(&vfs, "", "\t")
-	if err != nil {
-		log.Fatalf("Failed to encode VFS overlay metadata: %v", err)
-	}
-	if err := out.WriteHeader(&tar.Header{
-		Name:    "vfsoverlay.yaml",
-		ModTime: time.Now(),
-		Mode:    0644,
-		Size:    int64(len(vfsRaw)),
+func (v *vfsTargetLayer) Create(p string, size int64, modTime time.Time) error {
+	if err := v.i.Place(path.Dir(p), true, &Inode{
+		Type:             "file",
+		Name:             path.Base(p),
+		ExternalContents: p,
 	}); err != nil {
-		log.Fatalf("Failed to write header for VFS overlay: %v", err)
+		return err
 	}
-	if _, err := out.Write(vfsRaw); err != nil {
-		log.Fatalf("Failed to write VFS overlay: %v", err)
+	return v.t.Create(p, size, modTime)
+}
+
+func (v *vfsTargetLayer) Write(b []byte) (int, error) {
+	return v.t.Write(b)
+}
+
+func (v *vfsTargetLayer) Close() error {
+	vfsRaw, err := json.MarshalIndent(v.v, "", "\t")
+	if err != nil {
+		return fmt.Errorf("failed to encode VFS overlay metadata: %w", err)
 	}
-	if err := out.Close(); err != nil {
-		log.Fatalf("failed to close tar writer: %v", err)
+	v.t.Create("vfsoverlay.yaml", int64(len(vfsRaw)), time.Now())
+	if _, err := v.t.Write(vfsRaw); err != nil {
+		return fmt.Errorf("failed to write VFS overlay: %w", err)
 	}
+	return v.t.Close()
+}
+
+type archiveTarget struct {
+	outFile *os.File
+	outComp *zstd.Encoder
+	out     *tar.Writer
+}
+
+func newArchiveTarget(name string) (*archiveTarget, error) {
+	outFile, err := os.Create(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create output archive: %w", err)
+	}
+	outComp, err := zstd.NewWriter(outFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize zstd compressor: %w", err)
+	}
+	out := tar.NewWriter(outComp)
+	return &archiveTarget{
+		outFile: outFile,
+		outComp: outComp,
+		out:     out,
+	}, nil
+}
+
+func (a *archiveTarget) Close() error {
+	if err := a.out.Close(); err != nil {
+		return err
+	}
+	if err := a.outComp.Close(); err != nil {
+		return err
+	}
+	if err := a.outFile.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *archiveTarget) Create(path string, size int64, modTime time.Time) error {
+	return a.out.WriteHeader(&tar.Header{
+		Name:    path,
+		ModTime: modTime,
+		Size:    size,
+		Mode:    0644,
+	})
+}
+
+func (a *archiveTarget) Write(b []byte) (int, error) {
+	return a.out.Write(b)
+}
+
+type directoryTarget struct {
+	rootDir  string
+	currFile *os.File
+}
+
+func (d *directoryTarget) Create(path string, size int64, modTime time.Time) error {
+	if d.currFile != nil {
+		d.currFile.Close()
+	}
+	targetPath := filepath.Join(d.rootDir, filepath.FromSlash(path))
+	f, err := os.Create(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return err
+		}
+		f, err = os.Create(targetPath)
+		if err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	d.currFile = f
+	return nil
+}
+
+func (d *directoryTarget) Write(b []byte) (int, error) {
+	return d.currFile.Write(b)
+}
+
+func (d *directoryTarget) Close() error {
+	if d.currFile != nil {
+		return d.currFile.Close()
+	}
+	return nil
 }

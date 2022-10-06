@@ -1,0 +1,34 @@
+build:
+  stage: build
+  image: golang:1
+  script:
+    - go build
+  artifacts:
+    untracked: false
+    paths:
+      - winsysroot
+    expire_in: 7 days
+
+test15:
+  stage: test
+  image: debian:bullseye
+  variables:
+    LLVM_MAJOR: "15"
+    WINSYSROOT: /tmp/sysroot_test
+  script:
+    # Install Root CAs
+    - apt-get update -yy
+    - apt-get install -yy ca-certificates
+    # Install LLVM
+    - printf "deb [signed-by=$CI_PROJECT_DIR/build/llvm-apt.gpg] https://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-$LLVM_MAJOR main\ndeb-src [signed-by=$CI_PROJECT_DIR/build/llvm-apt.gpg] https://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-$LLVM_MAJOR main\n" > /etc/apt/sources.list.d/llvm.list
+    - apt-get update -yy
+    - apt-get install -yy clang-$LLVM_MAJOR lld-$LLVM_MAJOR make
+    - ln -fs /usr/bin/clang-$LLVM_MAJOR /usr/bin/clang-cl
+    - ln -fs /usr/bin/lld-$LLVM_MAJOR /usr/bin/lld-link
+    # Make sysroot
+    - ./winsysroot --out-dir $WINSYSROOT
+    # Test sysroot by building the two examples
+    - wrappers/clang-cl-x64 /o examples/helloworld-x64.exe examples/helloworld.cc
+    - wrappers/clang-cl-x64 /o examples/winsock2-x64.exe examples/winsock2.c
+  dependencies:
+    - build

@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
-CLANG_CL="${CLANG_CL:clang-cl}"
+CLANG_CL="${CLANG_CL:-clang-cl}"
 exec "$CLANG_CL" --target=x86_64-pc-windows-msvc -fuse-ld=lld -Xclang -ivfsoverlay -Xclang $WINSYSROOT/vfsoverlay.yaml /winsysroot $WINSYSROOT "$@" /link /vfsoverlay:$WINSYSROOT/vfsoverlay.yaml
