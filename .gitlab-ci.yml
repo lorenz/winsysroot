@@ -9,11 +9,11 @@ build:
       - winsysroot
     expire_in: 7 days
 
-test15:
+test16:
   stage: test
   image: debian:bullseye
   variables:
-    LLVM_MAJOR: "15"
+    LLVM_MAJOR: "16"
     WINSYSROOT: /tmp/sysroot_test
   script:
     # Install Root CAs
@@ -26,7 +26,7 @@ test15:
     - ln -fs /usr/bin/clang-$LLVM_MAJOR /usr/bin/clang-cl
     - ln -fs /usr/bin/lld-$LLVM_MAJOR /usr/bin/lld-link
     # Make sysroot
-    - ./winsysroot --out-dir $WINSYSROOT
+    - ./winsysroot --out-dir $WINSYSROOT --win-sdk-version 10.0.22621
     # Test sysroot by building the two examples
     - wrappers/clang-cl-x64 /o examples/helloworld-x64.exe examples/helloworld.cc
     - wrappers/clang-cl-x64 /o examples/winsock2-x64.exe examples/winsock2.c
