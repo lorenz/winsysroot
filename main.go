@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,12 +21,13 @@ import (
 )
 
 var (
-	flagVSRelease     = flag.String("vs-release", "17", "Major release of Visual Studio to generate sysroot from (like 14, 17, ..)")
-	flagWinSDKVersion = flag.String("win-sdk-version", "10.0.20348", "Version of the Windows SDK to use, without the patch version (e.g. 10.0.20348)")
-	flagArchitectures = flag.String("architectures", "x64", "Comma-separated list of architectures to include in the sysroot. Supported are x86, x64, arm, arm64 and arm64ec.")
-	flagSlim          = flag.Bool("slim", true, "Strip most excess files, ship only headers, libraries and object files. Also strips separate onecore, store and uwp libraries.")
-	flagOutDir        = flag.String("out-dir", "", "Output sysroot under this directory. Exclusive with --out-tar.")
-	flagOutTar        = flag.String("out-tar", "", "Output sysroot to a zstd-compressed tarball at the path given to this argument. Exclusive with --out-dir.")
+	flagVSRelease       = flag.String("vs-release", "17", "Major release of Visual Studio to generate sysroot from (like 14, 17, ..)")
+	flagWinSDKVersion   = flag.String("win-sdk-version", "10.0.20348", "Version of the Windows SDK to use, without the patch version (e.g. 10.0.20348)")
+	flagArchitectures   = flag.String("architectures", "x64", "Comma-separated list of architectures to include in the sysroot. Supported are x86, x64, arm, arm64 and arm64ec.")
+	flagSlim            = flag.Bool("slim", true, "Strip most excess files, ship only headers, libraries and object files. Also strips separate onecore, store and uwp libraries.")
+	flagOutDir          = flag.String("out-dir", "", "Output sysroot under this directory. Exclusive with --out-tar.")
+	flagOutTar          = flag.String("out-tar", "", "Output sysroot to a zstd-compressed tarball at the path given to this argument. Exclusive with --out-dir.")
+	flagListSDKVersions = flag.Bool("list-win-sdk-versions", false, "List available Windows SDK versions and exit")
 )
 
 func handleHTTPError(res *http.Response, err error) (*http.Response, error) {
@@ -80,6 +82,17 @@ func main() {
 		log.Fatalf("failed to parse installer manifest: %v", err)
 	}
 	res.Body.Close()
+
+	if *flagListSDKVersions {
+		packageRegexp := regexp.MustCompile(`^Win.*SDK_([0-9.]+)$`)
+		for _, pkg := range installerManifest.Packages {
+			res := packageRegexp.FindStringSubmatch(pkg.ID)
+			if len(res) > 0 {
+				fmt.Printf("%v\n", res[1])
+			}
+		}
+		return
+	}
 
 	var out TargetI
 
